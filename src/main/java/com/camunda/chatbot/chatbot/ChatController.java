@@ -1,6 +1,6 @@
 package com.camunda.chatbot.chatbot;
 
-import io.camunda.zeebe.client.ZeebeClient;
+import io.camunda.client.CamundaClient;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -25,7 +25,7 @@ import java.util.Map;
 public class ChatController {
 
     private static final Logger LOG = LoggerFactory.getLogger(ChatController.class);
-    private final ZeebeClient zeebeClient;
+    private final CamundaClient camundaClient;
     private final ChatService chatService;
 
     @Value("${camunda.bpmn.process-id:Process_xadodio_chat}")
@@ -40,8 +40,8 @@ public class ChatController {
     @Value("${camunda.chat.max-attachment-bytes-per-file:5242880}")
     private long maxAttachmentBytesPerFile;
 
-    public ChatController(ZeebeClient zeebeClient, ChatService chatService) {
-        this.zeebeClient = zeebeClient;
+    public ChatController(CamundaClient camundaClient, ChatService chatService) {
+        this.camundaClient = camundaClient;
         this.chatService = chatService;
     }
 
@@ -190,7 +190,7 @@ public class ChatController {
                     text.length(),
                     attachmentVars.size());
 
-            var event = zeebeClient
+            var event = camundaClient
                     .newCreateInstanceCommand()
                     .bpmnProcessId(bpmnProcessId)
                     .latestVersion()
@@ -252,7 +252,7 @@ public class ChatController {
             vars.put("absenceRequest", absenceText);
             vars.put("currentChat", currentChatMap(combinedText, attachmentVars));
 
-            zeebeClient.newCompleteCommand(jobKey).variables(vars).send().join();
+            camundaClient.newCompleteCommand(jobKey).variables(vars).send().join();
 
             chatService.clearPendingJob(conversationId);
 

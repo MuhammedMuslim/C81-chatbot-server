@@ -28,6 +28,7 @@
 	</scm>
 	<properties>
 		<java.version>25</java.version>
+		<camunda.version>8.9.1</camunda.version>
 	</properties>
 	<dependencies>
 		<dependency>
@@ -35,9 +36,9 @@
 			<artifactId>spring-boot-starter-webmvc</artifactId>
 		</dependency>
 		<dependency>
-			<groupId>io.camunda.spring</groupId>
-			<artifactId>spring-boot-starter-camunda</artifactId>
-			<version>8.5.0</version>
+			<groupId>io.camunda</groupId>
+			<artifactId>camunda-spring-boot-4-starter</artifactId>
+			<version>${camunda.version}</version>
 		</dependency>
 
 		<dependency>
