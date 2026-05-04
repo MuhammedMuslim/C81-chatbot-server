@@ -25,6 +25,8 @@ public class ChatService {
 
     public void clearPendingJob(Long conversationId) {
         pendingJobs.remove(conversationId);
+        // Next assistant turn must not reuse the previous message while the agent runs again.
+        latestResponses.remove(conversationId);
     }
 
     public String getLatestResponse(Long conversationId) {

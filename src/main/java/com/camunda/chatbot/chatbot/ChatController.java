@@ -1,6 +1,8 @@
 package com.camunda.chatbot.chatbot;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.camunda.client.CamundaClient;
+import io.camunda.client.api.search.response.Variable;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -10,7 +12,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.io.ByteArrayInputStream;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
@@ -24,9 +25,11 @@ import java.util.Map;
 @CrossOrigin(origins = "*")
 public class ChatController {
 
+    private static final ObjectMapper JSON = new ObjectMapper();
     private static final Logger LOG = LoggerFactory.getLogger(ChatController.class);
     private final CamundaClient camundaClient;
     private final ChatService chatService;
+    private final CamundaChatSyncService camundaChatSyncService;
 
     @Value("${camunda.bpmn.process-id:Process_xadodio_chat}")
     private String bpmnProcessId;
@@ -40,9 +43,13 @@ public class ChatController {
     @Value("${camunda.chat.max-attachment-bytes-per-file:5242880}")
     private long maxAttachmentBytesPerFile;
 
-    public ChatController(CamundaClient camundaClient, ChatService chatService) {
+    public ChatController(
+            CamundaClient camundaClient,
+            ChatService chatService,
+            CamundaChatSyncService camundaChatSyncService) {
         this.camundaClient = camundaClient;
         this.chatService = chatService;
+        this.camundaChatSyncService = camundaChatSyncService;
     }
 
     /** JSON part for one file (base64 body). */
@@ -159,6 +166,39 @@ public class ChatController {
         return "Uploaded " + attachments.size() + " file(s).";
     }
 
+    /** Reads a primitive string variable from the process (used to preserve absenceRequest on attachment-only replies). */
+    private String fetchProcessVariableString(long processInstanceKey, String variableName) {
+        try {
+            List<Variable> list = camundaClient
+                    .newVariableSearchRequest()
+                    .filter(f -> f.processInstanceKey(processInstanceKey).name(variableName))
+                    .withFullValues()
+                    .page(p -> p.limit(8))
+                    .send()
+                    .join()
+                    .items();
+            if (list == null || list.isEmpty()) {
+                return null;
+            }
+            String raw = list.get(0).getValue();
+            if (raw == null || raw.isBlank()) {
+                return null;
+            }
+            raw = raw.trim();
+            if (raw.length() >= 2 && raw.charAt(0) == '"') {
+                try {
+                    return JSON.readValue(raw, String.class);
+                } catch (Exception e) {
+                    return raw;
+                }
+            }
+            return raw;
+        } catch (Exception e) {
+            LOG.warn("Could not read variable {} for PI {}: {}", variableName, processInstanceKey, e.getMessage());
+            return null;
+        }
+    }
+
     @PostMapping("/start")
     public ResponseEntity<?> startFromChat(@RequestBody StartFromChatRequest request) {
         try {
@@ -199,14 +239,22 @@ public class ChatController {
                     .join();
 
             long conversationId = event.getProcessInstanceKey();
-            return ResponseEntity.ok(Map.of("conversationId", conversationId));
+            // Must be a JSON string: JS cannot safely represent Zeebe keys above 2^53-1 as numbers.
+            return ResponseEntity.ok(Map.of("conversationId", String.valueOf(conversationId)));
         } catch (IllegalArgumentException ex) {
             return ResponseEntity.badRequest().body(Map.of("error", ex.getMessage()));
         }
     }
 
     @GetMapping("/{conversationId}")
-    public ResponseEntity<?> getLatestMessage(@PathVariable long conversationId) {
+    public ResponseEntity<?> getLatestMessage(@PathVariable("conversationId") String conversationIdRaw) {
+        final long conversationId;
+        try {
+            conversationId = Long.parseLong(conversationIdRaw.trim());
+        } catch (NumberFormatException ex) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Invalid conversation id"));
+        }
+        camundaChatSyncService.syncPendingUserFeedbackFromEngine(conversationId);
         String responseText = chatService.getLatestResponse(conversationId);
         Long pendingJobKey = chatService.getPendingJobKey(conversationId);
 
@@ -222,7 +270,15 @@ public class ChatController {
     }
 
     @PostMapping("/{conversationId}")
-    public ResponseEntity<?> replyToChat(@PathVariable long conversationId, @RequestBody ReplyRequest request) {
+    public ResponseEntity<?> replyToChat(
+            @PathVariable("conversationId") String conversationIdRaw,
+            @RequestBody ReplyRequest request) {
+        final long conversationId;
+        try {
+            conversationId = Long.parseLong(conversationIdRaw.trim());
+        } catch (NumberFormatException ex) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Invalid conversation id"));
+        }
         try {
             String message = request != null && request.message != null ? request.message.trim() : "";
             List<Map<String, Object>> attachmentVars = buildZeebeAttachments(request != null ? request.attachments : null);
@@ -239,6 +295,12 @@ public class ChatController {
             }
 
             String absenceText = absenceSummary(message, attachmentVars);
+            if (message.isEmpty() && !attachmentVars.isEmpty()) {
+                String priorAbsence = fetchProcessVariableString(conversationId, "absenceRequest");
+                if (priorAbsence != null && !priorAbsence.isBlank()) {
+                    absenceText = priorAbsence;
+                }
+            }
             String combinedText = appendExtractedText(message.isEmpty() ? absenceText : message, attachmentVars);
 
             LOG.info(
