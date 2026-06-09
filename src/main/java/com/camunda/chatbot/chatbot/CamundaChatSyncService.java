@@ -41,7 +41,9 @@ public class CamundaChatSyncService {
     }
 
     public void syncPendingUserFeedbackFromEngine(long processInstanceKey) {
-        if (chatService.getPendingJobKey(processInstanceKey) != null) {
+        Long cachedJobKey = chatService.getPendingJobKey(processInstanceKey);
+        String cachedText = chatService.getLatestResponse(processInstanceKey);
+        if (cachedJobKey != null && cachedText != null && !cachedText.isBlank()) {
             return;
         }
         try {
@@ -70,6 +72,10 @@ public class CamundaChatSyncService {
                 return;
             }
             String assistantText = fetchAssistantTextFromVariables(processInstanceKey);
+            if (assistantText.isBlank()) {
+                LOG.debug("User_Feedback job {} on PI {} has no assistant text yet", jobKey, processInstanceKey);
+                return;
+            }
             LOG.info(
                     "Synced User_Feedback from engine for PI {} job {} (message length {})",
                     processInstanceKey,
@@ -83,6 +89,11 @@ public class CamundaChatSyncService {
 
     private String fetchAssistantTextFromVariables(long processInstanceKey) {
         try {
+            String direct = fetchProcessVariableString(processInstanceKey, "responseText");
+            if (direct != null && !direct.isBlank()) {
+                return direct.trim();
+            }
+
             List<Variable> vars = camundaClient
                     .newVariableSearchRequest()
                     .filter(f -> f.processInstanceKey(processInstanceKey).name(agentVariableName))
@@ -109,6 +120,38 @@ public class CamundaChatSyncService {
         } catch (Exception e) {
             LOG.warn("Variable search for {} on PI {}: {}", agentVariableName, processInstanceKey, e.getMessage());
             return "";
+        }
+    }
+
+    private String fetchProcessVariableString(long processInstanceKey, String variableName) {
+        try {
+            List<Variable> list = camundaClient
+                    .newVariableSearchRequest()
+                    .filter(f -> f.processInstanceKey(processInstanceKey).name(variableName))
+                    .withFullValues()
+                    .page(p -> p.limit(4))
+                    .send()
+                    .join()
+                    .items();
+            if (list == null || list.isEmpty()) {
+                return null;
+            }
+            String raw = list.get(0).getValue();
+            if (raw == null || raw.isBlank()) {
+                return null;
+            }
+            raw = raw.trim();
+            if (raw.length() >= 2 && raw.charAt(0) == '"') {
+                try {
+                    return JSON.readValue(raw, String.class);
+                } catch (Exception e) {
+                    return raw;
+                }
+            }
+            return raw;
+        } catch (Exception e) {
+            LOG.debug("Could not read variable {} for PI {}: {}", variableName, processInstanceKey, e.getMessage());
+            return null;
         }
     }
 

@@ -259,7 +259,10 @@ public class ChatController {
         Long pendingJobKey = chatService.getPendingJobKey(conversationId);
 
         if (pendingJobKey != null) {
-            return ResponseEntity.ok(Map.of("status", "pending_user_reply", "message", responseText != null ? responseText : ""));
+            if (responseText == null || responseText.isBlank()) {
+                return ResponseEntity.ok(Map.of("status", "waiting"));
+            }
+            return ResponseEntity.ok(Map.of("status", "pending_user_reply", "message", responseText));
         }
 
         if (responseText == null || responseText.isBlank()) {
