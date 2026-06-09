@@ -28,7 +28,8 @@
 	</scm>
 	<properties>
 		<java.version>25</java.version>
-		<camunda.version>8.9.1</camunda.version>
+		<!-- Must match Camunda Cloud cluster version (8.8). 8.9 client sends tenantFilter on job activation, which 8.8 clusters reject with HTTP 400. -->
+		<camunda.version>8.8.25</camunda.version>
 	</properties>
 	<dependencies>
 		<dependency>
