@@ -105,8 +105,11 @@ public class CamundaWorker {
         Map<String, Object> variables = job.getVariablesAsMap();
         String responseText = extractAssistantText(variables);
 
-        LOG.info("User_Feedback for process {} job {} (text length {})", processInstanceKey, jobKey, responseText.length());
-
-        chatService.addPendingJob(processInstanceKey, jobKey, responseText);
+        boolean accepted = chatService.addPendingJob(processInstanceKey, jobKey, responseText);
+        if (accepted) {
+            LOG.info("User_Feedback for process {} job {} (text length {})", processInstanceKey, jobKey, responseText.length());
+        } else {
+            LOG.info("Ignored stale User_Feedback job {} for process {}", jobKey, processInstanceKey);
+        }
     }
 }

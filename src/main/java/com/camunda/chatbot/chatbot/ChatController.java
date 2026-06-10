@@ -262,7 +262,18 @@ public class ChatController {
             if (responseText == null || responseText.isBlank()) {
                 return ResponseEntity.ok(Map.of("status", "waiting"));
             }
-            return ResponseEntity.ok(Map.of("status", "pending_user_reply", "message", responseText));
+            // messageId lets the UI deduplicate by engine job instead of by text, so identical
+            // agent messages on different turns are still displayed and stale polls are ignored.
+            return ResponseEntity.ok(Map.of(
+                    "status", "pending_user_reply",
+                    "message", responseText,
+                    "messageId", String.valueOf(pendingJobKey)));
+        }
+
+        // Nothing pending: the agent is either still running, or the process ended
+        // (e.g. the BPMN "Stop chat after 1 hour" timer fired). Tell the UI which one.
+        if (camundaChatSyncService.isProcessEnded(conversationId)) {
+            return ResponseEntity.ok(Map.of("status", "ended"));
         }
 
         if (responseText == null || responseText.isBlank()) {
@@ -293,6 +304,11 @@ public class ChatController {
 
             Long jobKey = chatService.getPendingJobKey(conversationId);
             if (jobKey == null) {
+                // Cache may be empty after a backend restart; try to recover from the engine.
+                camundaChatSyncService.syncPendingUserFeedbackFromEngine(conversationId);
+                jobKey = chatService.getPendingJobKey(conversationId);
+            }
+            if (jobKey == null) {
                 return ResponseEntity.badRequest()
                         .body(Map.of("error", "No pending chat request found for this conversation"));
             }
@@ -317,9 +333,24 @@ public class ChatController {
             vars.put("absenceRequest", absenceText);
             vars.put("currentChat", currentChatMap(combinedText, attachmentVars));
 
-            camundaClient.newCompleteCommand(jobKey).variables(vars).send().join();
+            try {
+                camundaClient.newCompleteCommand(jobKey).variables(vars).send().join();
+            } catch (Exception completeError) {
+                // The cached job is gone in the engine (already completed elsewhere, timed out,
+                // or the process ended). Drop it so the next poll re-syncs the real state.
+                LOG.warn(
+                        "Failed to complete job {} for process {}: {}",
+                        jobKey,
+                        conversationId,
+                        completeError.getMessage());
+                chatService.markJobCompleted(conversationId, jobKey);
+                return ResponseEntity.status(409)
+                        .body(Map.of("error", "This message could not be delivered. Please wait a moment and try again."));
+            }
 
-            chatService.clearPendingJob(conversationId);
+            // Record the completed key so eventually-consistent search results can never
+            // re-introduce this turn's message (root cause of repeated/missing replies).
+            chatService.markJobCompleted(conversationId, jobKey);
 
             return ResponseEntity.ok(Map.of("status", "sent"));
         } catch (IllegalArgumentException ex) {
